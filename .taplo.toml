@@ -1,0 +1,5 @@
+include = ["Cargo.toml"]
+
+
+[schema]
+path = "https://json-schema.org/draft-07/schema#"
