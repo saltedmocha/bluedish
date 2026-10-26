@@ -2,5 +2,14 @@
 name = "bluedish"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.99"
+description = "A slightly less unserious redis implementation in rust"
+readme = "README.md"
+repository = "https://github.com/saltedmocha/bluedish"
+license = "MIT"
+publish = false
 
 [dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+socket2 = "0.6.5"
+thiserror = "2.0.21"
