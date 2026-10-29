@@ -1,0 +1,5 @@
+[toolchain]
+channel = "stable-x86_64-apple-darwin"
+profile = "default"
+components = ["clippy", "rust-analyzer", "rustfmt"]
+targets = ["x86_64-apple-darwin"]

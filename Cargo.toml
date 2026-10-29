@@ -13,3 +13,41 @@ publish = false
 serde = { version = "1.0.229", features = ["derive"] }
 socket2 = "0.6.5"
 thiserror = "2.0.21"
+
+[lints.clippy]
+# Cargo
+wildcard_dependencies = "warn"
+
+# Restriction
+allow_attributes = "warn"
+clone_on_ref_ptr = "warn"
+create_dir = "warn"
+dbg_macro = "warn"
+exit = "warn"
+tests_outside_test_module = "warn"
+undocumented_unsafe_blocks = "warn"
+unused_result_ok = "warn"
+unused_trait_names = "warn"
+verbose_file_reads = "warn"
+
+cognitive_complexity = "allow"
+missing_const_for_fn = "allow"
+non_send_fields_in_send_ty = "allow"
+# Nursery
+nursery = { level = "warn", priority = -1 }
+option_if_let_else = "allow"
+significant_drop_tightening = "allow"
+suboptimal_flops = "allow"
+useless_let_if_seq = "allow"
+
+cast_precision_loss = "allow"
+default_trait_access = "allow"
+map_unwrap_or = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+# Pedantic
+pedantic = { level = "warn", priority = -1 }
+struct_excessive_bools = "allow"
+unnecessary_debug_formatting = "allow"
