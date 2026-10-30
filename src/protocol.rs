@@ -1,28 +1,29 @@
-use serde::de::Error;
 use thiserror::Error;
-
-use crate::resp::ParsingError::TooShort;
 
 const TYPE_IDENTIFIER: [u8; 15] = *b"+-:$*_#,(!=%|~>";
 
+#[derive(Debug)]
 pub struct Resp(String);
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ParsingError {
-    #[error("Prepend must be one of the reserved data type")]
-    InvalidPrependType,
+    #[error("Input contains invalid data for prefix type")]
+    InvalidContent,
+    #[error("Prefix must be one of the reserved data type")]
+    InvalidPrefixType,
+    #[error("Bulk data type must include length")]
+    MissingLength,
     #[error("Array/Bulk String must be prepended by data type char")]
-    MissingPrependType,
+    MissingPrefixType,
     #[error("Must ends with carriage returns and newline")]
     MissingTerminator,
     #[error("Array/Bulk String contains non utf-8 character")]
     NonUTFCharacters,
     #[error("Input missing content")]
     TooShort,
-    #[error("Bulk data type must include length")]
-    MissingLength,
 }
 
+#[derive(Debug)]
 pub struct BulkString {
     pub size: u32,
     pub content: Vec<String>,
@@ -30,20 +31,52 @@ pub struct BulkString {
 
 impl Default for Resp {
     fn default() -> Self {
-        Self(String::from("$-1\r\n"))
+        Self("$-1\r\n".to_string())
     }
 }
 
-impl PartialEq for Resp {
-    fn eq(&self, other: &Self) -> bool {
-        let left = &self.0;
-        let right = &other.0;
+impl From<BulkString> for Resp {
+    fn from(value: BulkString) -> Self {
+        let content_string = value.content.join("\r\n");
 
-        if left != right {
-            return false;
+        Self(format!("${}\r\n{}\r\n", value.size, content_string))
+    }
+}
+
+impl From<i64> for Resp {
+    fn from(value: i64) -> Self {
+        Self(format!(":{value}\r\n"))
+    }
+}
+
+impl From<Resp> for Vec<u8> {
+    fn from(value: Resp) -> Self {
+        value.0.into_bytes()
+    }
+}
+
+impl<'a> TryFrom<&'a Resp> for &'a [u8] {
+    type Error = ParsingError;
+
+    fn try_from(value: &'a Resp) -> Result<Self, Self::Error> {
+        let chars = &value.0.chars().next();
+        let Some(first) = chars else {
+            return Err(ParsingError::MissingPrefixType);
+        };
+
+        let Ok(chars_u8) = u8::try_from(*first) else {
+            return Err(ParsingError::NonUTFCharacters);
+        };
+
+        if !TYPE_IDENTIFIER.contains(&chars_u8) {
+            return Err(ParsingError::InvalidPrefixType);
         }
 
-        true
+        if !&value.0.ends_with("\r\n") {
+            return Err(ParsingError::MissingTerminator);
+        }
+
+        Ok(value.0.as_bytes())
     }
 }
 
@@ -52,7 +85,7 @@ impl TryFrom<&[u8]> for Resp {
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         if value.is_empty() {
-            return Ok(Self(String::from("*-1\r\n")));
+            return Ok(Self("*-1\r\n".to_string()));
         }
 
         if !value.ends_with(b"\r\n") {
@@ -61,7 +94,7 @@ impl TryFrom<&[u8]> for Resp {
 
         // Unwrap is fine (i think) it's checked that it's not empty already
         if !TYPE_IDENTIFIER.contains(value.first().unwrap()) {
-            return Err(ParsingError::MissingPrependType);
+            return Err(ParsingError::MissingPrefixType);
         }
 
         let Ok(byte_str) = str::from_utf8(value) else {
@@ -72,28 +105,76 @@ impl TryFrom<&[u8]> for Resp {
     }
 }
 
-impl<'a> TryFrom<&'a Resp> for &'a [u8] {
+impl TryFrom<Resp> for i64 {
     type Error = ParsingError;
 
-    fn try_from(value: &'a Resp) -> Result<Self, Self::Error> {
-        let chars = &value.0.chars().next();
-        let Some(first) = chars else {
-            return Err(ParsingError::MissingPrependType);
-        };
-
-        let Ok(chars_u8) = u8::try_from(*first) else {
-            return Err(ParsingError::NonUTFCharacters);
-        };
-
-        if !TYPE_IDENTIFIER.contains(&chars_u8) {
-            return Err(ParsingError::InvalidPrependType);
+    fn try_from(value: Resp) -> Result<Self, Self::Error> {
+        if !value.0.starts_with(':') {
+            return Err(ParsingError::InvalidPrefixType);
         }
 
-        if !&value.0.ends_with("\r\n") {
+        let trimmed = {
+            let base = &value.0;
+            let trim_start = if base.contains('+') {
+                base.trim_start_matches(":+")
+            } else {
+                base.trim_start_matches(':')
+            };
+
+            trim_start.trim_end_matches("\r\n")
+        };
+
+        let Ok(parsed) = trimmed.parse::<Self>() else {
+            return Err(ParsingError::InvalidContent);
+        };
+
+        Ok(parsed)
+    }
+}
+
+impl TryFrom<Resp> for BulkString {
+    type Error = ParsingError;
+
+    fn try_from(value: Resp) -> Result<Self, Self::Error> {
+        let val_str = &value.0;
+
+        // $-1\r\n (the bulk string null) is about 5 char long
+        // \r and \n count as a single char each
+        // Even in case of there being only 0 item
+        // It'll still be at least 6 char long
+        // For example: $0\r\n\r\n = $, 1, \r, \n, \r, \n,
+        if val_str.len() < 5 {
+            return Err(ParsingError::TooShort);
+        }
+
+        if !val_str.starts_with('$') {
+            return Err(ParsingError::InvalidPrefixType);
+        }
+
+        if !val_str.ends_with("\r\n") {
             return Err(ParsingError::MissingTerminator);
         }
 
-        Ok(value.0.as_bytes())
+        let mut val_split = val_str.trim_start_matches('$').split("\r\n");
+        let Some(count) = val_split.next() else {
+            return Err(ParsingError::MissingLength);
+        };
+
+        let Ok(parsed_count) = count.parse::<u32>() else {
+            return Err(ParsingError::MissingLength);
+        };
+
+        let mut val_vec = val_split
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<String>>();
+
+        // Due to \r\n the split there will be always a empty string at the end
+        val_vec.pop_if(|s| s.is_empty());
+
+        Ok(Self {
+            size: parsed_count,
+            content: val_vec,
+        })
     }
 }
 
@@ -111,7 +192,7 @@ impl TryFrom<Vec<u8>> for Resp {
 
         // Unwrap is fine (i think) it's checked that it's not empty already
         if !TYPE_IDENTIFIER.contains(value.first().unwrap()) {
-            return Err(ParsingError::MissingPrependType);
+            return Err(ParsingError::MissingPrefixType);
         }
 
         let Ok(byte_str) = String::from_utf8(value) else {
@@ -122,54 +203,33 @@ impl TryFrom<Vec<u8>> for Resp {
     }
 }
 
-impl TryFrom<Resp> for BulkString {
-    type Error = ParsingError;
-
-    fn try_from(value: Resp) -> Result<Self, Self::Error> {
-        if !value.0.starts_with('$') {
-            return Err(ParsingError::InvalidPrependType);
+impl PartialEq for BulkString {
+    fn eq(&self, other: &Self) -> bool {
+        if self.size == other.size && self.content == other.content {
+            return true;
         }
 
-        let mut value_split = value.0.split_terminator("\r\n");
-        // Skip $
-        let _ = value_split.next();
-        let count = {
-            let Some(count_str) = value_split.next() else {
-                return Err(ParsingError::TooShort);
-            };
-
-            let Ok(count_parse) = count_str.parse::<usize>() else {
-                return Err(ParsingError::MissingLength);
-            };
-
-            count_parse
-        };
-
-        let val_vec = value_split
-            .map(std::string::ToString::to_string)
-            .collect::<Vec<String>>();
-
-        if val_vec.len() <= count {
-            return Err(ParsingError::TooShort);
-        }
-
-        let Ok(u32_count) = count.try_into() else {
-            todo!()
-        };
-
-        let bulk_string = Self {
-            size: u32_count,
-            content: val_vec,
-        };
-
-        Ok(bulk_string)
+        false
     }
 }
 
-impl TryFrom<BulkString> for Resp {
+impl PartialEq for Resp {
+    fn eq(&self, other: &Self) -> bool {
+        let left = &self.0;
+        let right = &other.0;
+
+        if left != right {
+            return false;
+        }
+
+        true
+    }
+}
+
+impl TryFrom<Resp> for ErrorMessage {
     type Error = ParsingError;
 
-    fn try_from(value: BulkString) -> Result<Self, Self::Error> {
+    fn try_from(value: Resp) -> Result<Self, Self::Error> {
         todo!()
     }
 }
@@ -192,5 +252,68 @@ mod tests {
         let converted: Result<&[u8], ParsingError> = (&binding).try_into();
 
         assert_eq!(slices, converted.unwrap());
+    }
+
+    #[test]
+    fn test_tryfrom_resp_to_bulk() {
+        let base = BulkString {
+            size: 5,
+            content: ["Test-1", "Test-2", "Test-3", "Test-4", "Test-5"]
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<String>>(),
+        };
+        let test_in = Resp("$5\r\nTest-1\r\nTest-2\r\nTest-3\r\nTest-4\r\nTest-5\r\n".to_string());
+        let result = BulkString::try_from(test_in).unwrap();
+
+        assert_eq!(result, base);
+    }
+
+    #[test]
+    fn test_from_bulk_to_resp() {
+        let base = Resp("$0\r\n\r\n".to_string());
+        let test_in = BulkString {
+            size: 0,
+            content: Vec::new(),
+        };
+        let result = Resp::from(test_in);
+
+        assert_eq!(result, base);
+    }
+
+    #[test]
+    fn test_from_resp_to_i64() {
+        let base = 10;
+        let test_in = Resp(":+10\r\n".to_string());
+        let result = i64::try_from(test_in).unwrap();
+
+        assert_eq!(result, base);
+    }
+
+    #[test]
+    fn test_from_resp_to_negative_i64() {
+        let base = -10;
+        let test_in = Resp(":-10\r\n".to_string());
+        let result = i64::try_from(test_in).unwrap();
+
+        assert_eq!(result, base);
+    }
+
+    #[test]
+    fn test_from_resp_to_plain_i64() {
+        let base = 10;
+        let test_in = Resp(":10\r\n".to_string());
+        let result = i64::try_from(test_in).unwrap();
+
+        assert_eq!(result, base);
+    }
+
+    #[test]
+    fn test_text_on_resp_to_i64() {
+        let err_type = ParsingError::InvalidPrefixType;
+        let test_in = Resp("+40\r\n".to_string());
+        let result = i64::try_from(test_in).unwrap_err();
+
+        assert_eq!(result, err_type);
     }
 }
